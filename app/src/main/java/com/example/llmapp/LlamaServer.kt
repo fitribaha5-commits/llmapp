@@ -1,6 +1,7 @@
 package com.example.llmapp
 
 import android.content.Context
+import android.os.Environment
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
@@ -14,18 +15,31 @@ class LlamaServer(
     private var llm: LlmInference? = null
 
     fun startWithModel() {
-        val modelPath = "/sdcard/Download/model.bin"
+        // ลองหลาย path
+        val paths = listOf(
+            "/sdcard/Download/model.bin",
+            "${Environment.getExternalStorageDirectory()}/Download/model.bin",
+            "${context.getExternalFilesDir(null)}/model.bin",
+            "${context.filesDir}/model.bin"
+        )
 
-        if (!File(modelPath).exists()) {
-            onLog("⚠️ ไม่พบโมเดลที่ $modelPath")
+        val modelPath = paths.firstOrNull { File(it).exists() }
+
+        if (modelPath == null) {
+            onLog("⚠️ ไม่พบโมเดล ลองวางไว้ที่:")
+            paths.forEach { onLog("  - $it") }
         } else {
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(modelPath)
-                .setMaxTokens(1024)
-                .build()
-
-            llm = LlmInference.createFromOptions(context, options)
-            onLog("✅ โหลดโมเดลสำเร็จ")
+            onLog("✅ พบโมเดลที่ $modelPath")
+            try {
+                val options = LlmInference.LlmInferenceOptions.builder()
+                    .setModelPath(modelPath)
+                    .setMaxTokens(1024)
+                    .build()
+                llm = LlmInference.createFromOptions(context, options)
+                onLog("✅ โหลดโมเดลสำเร็จ")
+            } catch (e: Exception) {
+                onLog("❌ โหลดโมเดล error: ${e.message}")
+            }
         }
 
         start(SOCKET_READ_TIMEOUT, false)
@@ -43,20 +57,13 @@ class LlamaServer(
                 json.put("model_loaded", llm != null)
                 jsonResponse(json.toString())
             }
-
-            uri == "/generate" && method == Method.POST -> {
-                handleGenerate(session)
-            }
-
+            uri == "/generate" && method == Method.POST -> handleGenerate(session)
             uri.startsWith("/generate") && method == Method.GET -> {
                 val prompt = session.parameters["prompt"]?.firstOrNull() ?: ""
                 generateResponse(prompt)
             }
-
             else -> {
-                val json = JSONObject()
-                json.put("error", "Not found")
-                jsonResponse(json.toString(), Response.Status.NOT_FOUND)
+                jsonResponse(JSONObject().put("error", "Not found").toString(), Response.Status.NOT_FOUND)
             }
         }
     }
@@ -67,25 +74,21 @@ class LlamaServer(
             session.parseBody(body)
             val json = JSONObject(body["postData"] ?: "{}")
             val prompt = json.optString("prompt", "")
-            if (prompt.isEmpty()) {
-                val err = JSONObject()
-                err.put("error", "กรุณาส่ง prompt")
-                return jsonResponse(err.toString(), Response.Status.BAD_REQUEST)
-            }
+            if (prompt.isEmpty()) return jsonResponse(
+                JSONObject().put("error", "กรุณาส่ง prompt").toString(),
+                Response.Status.BAD_REQUEST
+            )
             generateResponse(prompt)
         } catch (e: Exception) {
-            val err = JSONObject()
-            err.put("error", e.message)
-            jsonResponse(err.toString(), Response.Status.INTERNAL_ERROR)
+            jsonResponse(JSONObject().put("error", e.message).toString(), Response.Status.INTERNAL_ERROR)
         }
     }
 
     private fun generateResponse(prompt: String): Response {
-        if (llm == null) {
-            val err = JSONObject()
-            err.put("error", "โมเดลยังไม่โหลด")
-            return jsonResponse(err.toString(), Response.Status.INTERNAL_ERROR)
-        }
+        if (llm == null) return jsonResponse(
+            JSONObject().put("error", "โมเดลยังไม่โหลด").toString(),
+            Response.Status.INTERNAL_ERROR
+        )
         return try {
             onLog("🤔 กำลังคิด...")
             val result = llm!!.generateResponse(prompt)
@@ -94,13 +97,10 @@ class LlamaServer(
             response.put("response", result)
             jsonResponse(response.toString())
         } catch (e: Exception) {
-            val err = JSONObject()
-            err.put("error", e.message)
-            jsonResponse(err.toString(), Response.Status.INTERNAL_ERROR)
+            jsonResponse(JSONObject().put("error", e.message).toString(), Response.Status.INTERNAL_ERROR)
         }
     }
 
-    private fun jsonResponse(json: String, status: Response.Status = Response.Status.OK): Response {
-        return newFixedLengthResponse(status, "application/json", json)
-    }
+    private fun jsonResponse(json: String, status: Response.Status = Response.Status.OK) =
+        newFixedLengthResponse(status, "application/json", json)
 }
